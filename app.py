@@ -1,195 +1,152 @@
 import streamlit as st
 import chess
 import chess.pgn
+import chess.svg
 import chess.engine
-from google import genai # <--- NEW IMPORT
+from google import genai
+from streamlit_image_coordinates import streamlit_image_coordinates
 import shutil
 import io
+import base64
 
 # --- CONFIG ---
 st.set_page_config(page_title="Gemini Chess Lab", layout="wide")
 
-# --- AUTHENTICATION (NEW SDK) ---
-# The new SDK automatically looks for "GEMINI_API_KEY" in your environment/secrets.
-# We initialize the client once.
+# --- AUTHENTICATION ---
+client = None
 try:
     if "GEMINI_API_KEY" in st.secrets:
-        # standard initialization for the new SDK
         client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-    else:
-        st.warning("⚠️ API Key missing. Please set GEMINI_API_KEY in secrets.")
-        client = None
 except Exception as e:
     st.warning(f"⚠️ Setup Error: {e}")
-    client = None
-
-# --- STOCKFISH SETUP ---
-def get_stockfish_path():
-    return shutil.which("stockfish")
-
-stockfish_path = get_stockfish_path()
 
 # --- SESSION STATE ---
 if 'board' not in st.session_state:
     st.session_state.board = chess.Board()
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
-if 'orientation' not in st.session_state:
-    st.session_state.orientation = 'white'
+if 'selected_square' not in st.session_state:
+    st.session_state.selected_square = None
+if 'last_move' not in st.session_state:
+    st.session_state.last_move = None
 
-# --- LOGIC: AI & ENGINE ---
-def get_engine_move(board, time_limit=1.0):
-    if not stockfish_path:
-        return None, "Stockfish not installed."
-    try:
-        engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
-        result = engine.play(board, chess.engine.Limit(time=time_limit))
-        engine.quit()
-        return result.move, None
-    except Exception as e:
-        return None, str(e)
+# --- STOCKFISH SETUP ---
+stockfish_path = shutil.which("stockfish")
 
-def get_ai_analysis(board, user_question=None):
-    if not client: return "AI not connected."
-    
-    fen = board.fen()
-    model_id = "gemini-2.0-flash" # Uses the latest fast model
-    
-    if user_question:
-        prompt = f"""
-        You are a friendly Chess Tutor. 
-        Current FEN: {fen}
-        User Question: "{user_question}"
-        
-        Explain the answer clearly. Focus on plans, weaknesses, and key squares.
-        Do not just give engine lines. Explain the *reasoning*.
-        """
-    else:
-        prompt = f"Analyze this position (FEN: {fen}). Briefly point out the biggest threat or opportunity."
-    
-    try:
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt
-        )
-        return response.text
-    except Exception as e:
-        return f"AI Error: {e}"
-
+# --- AI & ENGINE LOGIC ---
 def get_ai_move(board):
     if not client: return None, "AI not connected."
-    
-    model_id = "gemini-2.0-flash"
-    prompt = f"""
-    You are playing Black/White. Current FEN: {board.fen()}.
-    Legal Moves: {[m.uci() for m in board.legal_moves]}
-    
-    Pick the single best strategic move. 
-    Output ONLY the move in UCI format (e.g. e2e4). No text.
-    """
+    prompt = f"Play the best move for {board.turn} (White/Black). FEN: {board.fen()}. Reply ONLY with the UCI move (e.g. e2e4)."
     try:
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt
-        )
-        move_str = response.text.strip().split()[-1] 
+        resp = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        move_str = resp.text.strip().split()[-1]
         move = chess.Move.from_uci(move_str)
-        if move in board.legal_moves:
-            return move, None
-        return None, f"AI suggested illegal move: {move_str}"
-    except Exception as e:
-        return None, str(e)
+        if move in board.legal_moves: return move, None
+        return None, "Illegal move"
+    except Exception as e: return None, str(e)
 
-# --- UI: SIDEBAR ---
-with st.sidebar:
-    st.header("🎮 Control Panel")
+def get_engine_move(board):
+    if not stockfish_path: return None, "No Engine"
+    engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+    res = engine.play(board, chess.engine.Limit(time=0.5))
+    engine.quit()
+    return res.move, None
+
+# --- BOARD INTERACTION (THE FIX) ---
+def render_interactive_board():
+    board = st.session_state.board
     
-    mode = st.radio("Game Mode", ["Practice (Human vs AI)", "Analysis Board", "AI vs Engine"])
-    
-    st.divider()
-    
-    if st.button("Reset Board"):
-        st.session_state.board = chess.Board()
-        st.session_state.chat_history = []
-        st.rerun()
-
-    st.subheader("📂 Load Game")
-    uploaded_file = st.file_uploader("Upload PGN", type="pgn")
-    if uploaded_file and st.button("Load PGN"):
-        stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
-        game = chess.pgn.read_game(stringio)
-        st.session_state.board = game.board()
-        st.session_state.chat_history = [{"role": "assistant", "content": f"Loaded PGN: {game.headers.get('Event', 'Unknown')}"}]
-        st.rerun()
-
-    fen_input = st.text_input("Or paste FEN string")
-    if st.button("Load FEN"):
-        try:
-            st.session_state.board = chess.Board(fen_input)
-            st.rerun()
-        except:
-            st.error("Invalid FEN")
-
-# --- UI: MAIN AREA ---
-col1, col2 = st.columns([1.2, 1])
-
-with col1:
-    from streamlit_chessboard import chessboard
-    board_data = chessboard(
-        st.session_state.board,
-        orientation=st.session_state.orientation,
-        key="board_component"
+    # 1. Generate SVG
+    # We highlight the selected square if one is clicked
+    arrows = []
+    if st.session_state.last_move:
+        arrows.append(chess.svg.Arrow(st.session_state.last_move.from_square, st.session_state.last_move.to_square))
+        
+    fill = {}
+    if st.session_state.selected_square is not None:
+        fill = {st.session_state.selected_square: "#ccffcc"} # Light green highlight
+        
+    svg = chess.svg.board(
+        board=board,
+        fill=fill,
+        arrows=arrows,
+        size=400 # Fixed pixel size for coordinate math
     )
     
-    if board_data:
-        move_fen = board_data.get("fen")
-        if move_fen and move_fen != st.session_state.board.fen():
-            st.session_state.board = chess.Board(move_fen)
-            st.rerun()
+    # 2. Convert SVG to Base64 for Image Component
+    b64 = base64.b64encode(svg.encode('utf-8')).decode("utf-8")
+    img_src = f"data:image/svg+xml;base64,{b64}"
 
-    # AUTOMATED MOVES
-    board = st.session_state.board
-    if not board.is_game_over():
-        if mode == "Practice (Human vs AI)":
-            # Check if it's AI's turn (Assuming AI plays Black)
-            if board.turn == chess.BLACK: 
-                with st.spinner("AI Tutor is thinking..."):
-                    move, err = get_ai_move(board)
-                    if move:
-                        board.push(move)
-                        st.session_state.board = board
-                        st.rerun()
+    # 3. Capture Click
+    # This component returns a dict like {'x': 120, 'y': 45} when clicked
+    value = streamlit_image_coordinates(img_src, key="board_click")
+    
+    # 4. Handle Click Logic
+    if value:
+        # Calculate Square from X/Y
+        # Board is 400px wide. Each square is 50px.
+        col_i = value['x'] // 50
+        row_i = value['y'] // 50
         
-        elif mode == "AI vs Engine":
-            if board.turn == chess.WHITE: # Engine
-                move, err = get_engine_move(board, time_limit=0.1)
-            else: # AI
-                move, err = get_ai_move(board)
+        # Convert to chess square (0-63)
+        # Standard view: Row 0 is Rank 8, Row 7 is Rank 1. Col 0 is File A.
+        # We need to flip logic if board is black oriented (omitted for simplicity here, assuming White bottom)
+        file_idx = col_i
+        rank_idx = 7 - row_i
+        clicked_square = chess.square(file_idx, rank_idx)
+        
+        # LOGIC: Select or Move?
+        if st.session_state.selected_square is None:
+            # First Click: Select piece
+            piece = board.piece_at(clicked_square)
+            if piece and piece.color == board.turn:
+                st.session_state.selected_square = clicked_square
+                st.rerun()
+        else:
+            # Second Click: Try to move
+            move = chess.Move(st.session_state.selected_square, clicked_square)
             
-            if move:
+            # Check promotion (auto-promote to Queen for UI simplicity)
+            if chess.square_rank(clicked_square) in [0, 7] and board.piece_at(st.session_state.selected_square).piece_type == chess.PAWN:
+                move = chess.Move(st.session_state.selected_square, clicked_square, promotion=chess.QUEEN)
+
+            if move in board.legal_moves:
                 board.push(move)
-                st.session_state.board = board
+                st.session_state.last_move = move
+                st.session_state.selected_square = None
+                st.rerun()
+            else:
+                # If invalid move (or clicked same square), deselect
+                st.session_state.selected_square = None
                 st.rerun()
 
-with col2:
-    st.subheader("🧠 Tutor's Reasoning")
-    
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+# --- MAIN APP LAYOUT ---
+col1, col2 = st.columns([1.5, 1])
 
-    if prompt := st.chat_input("Ask about this position..."):
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+with col1:
+    st.subheader("Chess Board")
+    render_interactive_board()
+    st.caption("Tap a piece to select, then tap a square to move.")
+
+with col2:
+    st.header("Controls")
+    if st.button("Reset Game"):
+        st.session_state.board = chess.Board()
+        st.session_state.selected_square = None
+        st.rerun()
         
-        with st.spinner("Analyzing..."):
-            response = get_ai_analysis(st.session_state.board, prompt)
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
-            st.rerun()
-            
     st.divider()
-    if st.button("Request Hint (Stockfish)"):
-        move, _ = get_engine_move(st.session_state.board)
-        if move:
-            st.info(f"Stockfish recommends: **{move.uci()}**")
+    
+    if st.button("AI Move (Gemini)"):
+        with st.spinner("Thinking..."):
+            m, e = get_ai_move(st.session_state.board)
+            if m: 
+                st.session_state.board.push(m)
+                st.rerun()
+            else: st.error(e)
+            
+    if st.button("Engine Move (Stockfish)"):
+        m, e = get_engine_move(st.session_state.board)
+        if m:
+            st.session_state.board.push(m)
+            st.rerun()
