@@ -143,3 +143,5 @@ with col2:
         if m:
             st.session_state.board.push(m)
             st.rerun()
+        else:
+            st.error(f"Stockfish Error{e})
