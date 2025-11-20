@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import chess
 import chess.pgn
@@ -32,7 +33,26 @@ if 'last_move' not in st.session_state:
     st.session_state.last_move = None
 
 # --- STOCKFISH SETUP ---
-stockfish_path = shutil.which("stockfish")
+#stockfish_path = shutil.which("stockfish")
+def get_stockfish_path():
+    # 1. Check standard command line (works if in PATH)
+    path = shutil.which("stockfish")
+    if path: 
+        return path
+
+    # 2. Check Streamlit Cloud (Debian/Ubuntu) specific location
+    # This is where 'packages.txt' installs it!
+    if os.path.exists("/usr/games/stockfish"):
+        return "/usr/games/stockfish"
+
+    # 3. Check Mac specific locations (Apple Silicon & Intel)
+    if os.path.exists("/opt/homebrew/bin/stockfish"):
+        return "/opt/homebrew/bin/stockfish"
+    if os.path.exists("/usr/local/bin/stockfish"):
+        return "/usr/local/bin/stockfish"
+    
+    return None
+
 
 # --- AI & ENGINE LOGIC ---
 def get_ai_move(board):
@@ -116,6 +136,8 @@ def render_interactive_board():
                 # Deselect if invalid
                 st.session_state.selected_square = None
                 st.rerun()
+
+stockfish_path = get_stockfish_path()
 
 # --- LAYOUT ---
 col1, col2 = st.columns([1.5, 1])
