@@ -144,4 +144,4 @@ with col2:
             st.session_state.board.push(m)
             st.rerun()
         else:
-            st.error(f"Stockfish Error{e})
+            st.error(f"Stockfish Error{e}")
