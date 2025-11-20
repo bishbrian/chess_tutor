@@ -2,3 +2,5 @@ streamlit
 python-chess
 streamlit-image-coordinates
 google-genai
+cairosvg
+Pillow

@@ -7,7 +7,8 @@ from google import genai
 from streamlit_image_coordinates import streamlit_image_coordinates
 import shutil
 import io
-import base64
+import cairosvg
+from PIL import Image
 
 # --- CONFIG ---
 st.set_page_config(page_title="Gemini Chess Lab", layout="wide")
@@ -52,61 +53,57 @@ def get_engine_move(board):
     engine.quit()
     return res.move, None
 
-# --- BOARD INTERACTION (THE FIX) ---
+# --- BOARD RENDERING (THE FIX) ---
 def render_interactive_board():
     board = st.session_state.board
     
-    # 1. Generate SVG
-    # We highlight the selected square if one is clicked
+    # 1. Highlight selected square & last move
     arrows = []
     if st.session_state.last_move:
         arrows.append(chess.svg.Arrow(st.session_state.last_move.from_square, st.session_state.last_move.to_square))
         
     fill = {}
     if st.session_state.selected_square is not None:
-        fill = {st.session_state.selected_square: "#ccffcc"} # Light green highlight
+        fill = {st.session_state.selected_square: "#ccffcc"} # Green highlight
         
-    svg = chess.svg.board(
+    # 2. Create SVG String
+    svg_data = chess.svg.board(
         board=board,
         fill=fill,
         arrows=arrows,
-        size=400 # Fixed pixel size for coordinate math
+        size=400
     )
     
-    # 2. Convert SVG to Base64 for Image Component
-    b64 = base64.b64encode(svg.encode('utf-8')).decode("utf-8")
-    img_src = f"data:image/svg+xml;base64,{b64}"
-
-    # 3. Capture Click
-    # This component returns a dict like {'x': 120, 'y': 45} when clicked
-    value = streamlit_image_coordinates(img_src, key="board_click")
+    # 3. Convert SVG -> PNG -> PIL Image
+    # This fixes the "File name too long" error because we pass an Object, not a String
+    png_data = cairosvg.svg2png(bytestring=svg_data.encode('utf-8'))
+    image = Image.open(io.BytesIO(png_data))
     
-    # 4. Handle Click Logic
+    # 4. Render the Image Component
+    # logic: returns {'x': 123, 'y': 456}
+    value = streamlit_image_coordinates(image, key="board_click")
+    
+    # 5. Handle Clicks
     if value:
-        # Calculate Square from X/Y
-        # Board is 400px wide. Each square is 50px.
         col_i = value['x'] // 50
         row_i = value['y'] // 50
         
-        # Convert to chess square (0-63)
-        # Standard view: Row 0 is Rank 8, Row 7 is Rank 1. Col 0 is File A.
-        # We need to flip logic if board is black oriented (omitted for simplicity here, assuming White bottom)
+        # Handle Flip (if you added board orientation logic later, adjust here)
+        # Assuming White at bottom for now:
         file_idx = col_i
         rank_idx = 7 - row_i
         clicked_square = chess.square(file_idx, rank_idx)
         
-        # LOGIC: Select or Move?
         if st.session_state.selected_square is None:
-            # First Click: Select piece
+            # Select Piece
             piece = board.piece_at(clicked_square)
             if piece and piece.color == board.turn:
                 st.session_state.selected_square = clicked_square
                 st.rerun()
         else:
-            # Second Click: Try to move
+            # Move Piece
             move = chess.Move(st.session_state.selected_square, clicked_square)
-            
-            # Check promotion (auto-promote to Queen for UI simplicity)
+            # Auto-promote to Queen
             if chess.square_rank(clicked_square) in [0, 7] and board.piece_at(st.session_state.selected_square).piece_type == chess.PAWN:
                 move = chess.Move(st.session_state.selected_square, clicked_square, promotion=chess.QUEEN)
 
@@ -116,36 +113,32 @@ def render_interactive_board():
                 st.session_state.selected_square = None
                 st.rerun()
             else:
-                # If invalid move (or clicked same square), deselect
+                # Deselect if invalid
                 st.session_state.selected_square = None
                 st.rerun()
 
-# --- MAIN APP LAYOUT ---
+# --- LAYOUT ---
 col1, col2 = st.columns([1.5, 1])
 
 with col1:
     st.subheader("Chess Board")
     render_interactive_board()
-    st.caption("Tap a piece to select, then tap a square to move.")
+    st.caption("Tap piece -> Tap square")
 
 with col2:
-    st.header("Controls")
-    if st.button("Reset Game"):
+    st.header("Actions")
+    if st.button("Reset"):
         st.session_state.board = chess.Board()
         st.session_state.selected_square = None
         st.rerun()
-        
-    st.divider()
     
-    if st.button("AI Move (Gemini)"):
-        with st.spinner("Thinking..."):
-            m, e = get_ai_move(st.session_state.board)
-            if m: 
-                st.session_state.board.push(m)
-                st.rerun()
-            else: st.error(e)
+    if st.button("AI Move"):
+        m, e = get_ai_move(st.session_state.board)
+        if m: 
+            st.session_state.board.push(m)
+            st.rerun()
             
-    if st.button("Engine Move (Stockfish)"):
+    if st.button("Stockfish Move"):
         m, e = get_engine_move(st.session_state.board)
         if m:
             st.session_state.board.push(m)
