@@ -171,7 +171,7 @@ with st.sidebar:
                 st.session_state.board.push(m)
                 st.session_state.last_move = m
                 st.rerun()
-
+print("INITIALIZATION")
 # Main Layout
 col1, col2 = st.columns([1.5, 1])
 
