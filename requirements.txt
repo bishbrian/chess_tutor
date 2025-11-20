@@ -1,4 +1,4 @@
 streamlit
 chess
-streamlit-chessboard
+streamlit-image-coordinates
 google-genai
