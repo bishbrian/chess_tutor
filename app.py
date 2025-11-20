@@ -155,6 +155,7 @@ with st.sidebar:
                 m, e = get_engine_move(st.session_state.board)
             else:
                 m, e = get_ai_move(st.session_state.board)
+                print(f"AI move was {m}, {e}; ")
             if m:
                 st.session_state.board.push(m)
                 st.session_state.last_move = m
